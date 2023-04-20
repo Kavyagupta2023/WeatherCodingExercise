@@ -1,45 +1,49 @@
 '''
 Approach:
 Here we are using python to create wrapper script to perform ETL operations.
-As first step we are connecting to postgreSQL database and then looping thru each weather data file into dictionary and splitting the line into columns and extracting the values of each column and then ignoring duplicates and inserting into weather data table and closing the connection created and print the no of records ingestion towards the end of the process. 
+1. Parse the files in the wx_data directory to extract the weather data records.
+2. Check for duplicates by querying the database to see if a record with the same date and station_id already exists. If a record already exists, skip it and move on to the next record.
+3. If a record does not exist, insert it into the weather_data table along with the corresponding station_id from the station_data table.
+
 '''
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
 import os
-import psycopg2
-from datetime import datetime
+import datetime
 
-conn = psycopg2.connect(
-    host="some_host",
-    database="some_database",
-    user="some_username",
-    password="some_password"
-)
+engine = create_engine('sqlite:///weather.db')
+Session = sessionmaker(bind=engine)
+session = Session()
 
-cur = conn.cursor()
+wx_data_dir = 'wx_data'
 
-for filename in os.listdir("wx_data"):
-    with open(os.path.join("wx_data", filename), "r") as f:
-        next(f)
+start_time = datetime.datetime.now()
 
-        for line in f:
-            columns = line.strip().split("\t")
+for filename in os.listdir(wx_data_dir):
+    if filename.endswith('.txt'):
+        filepath = os.path.join(wx_data_dir, filename)
+        with open(filepath, 'r') as f:
+            # Loop through each line in the file
+            for line in f:
+                data = line.strip().split('\t')
+                date = datetime.datetime.strptime(data[0], '%Y%m%d').date()
+                max_temp = float(data[1]) / 10.0
+                min_temp = float(data[2]) / 10.0
+                precipitation = float(data[3]) / 10.0
 
-            date_str = columns[0]
-            max_temp = float(columns[1]) / 10.0 if columns[1] != "-9999" else None
-            min_temp = float(columns[2]) / 10.0 if columns[2] != "-9999" else None
-            precipitation = float(columns[3]) / 10.0 if columns[3] != "-9999" else None
+                # Check for duplicates
+                exists = session.query(text("EXISTS (SELECT 1 FROM weather_data WHERE date=:date AND station_id=:station_id)")).params(date=date, station_id=filename.split('.')[0]).scalar()
 
-            date = datetime.strptime(date_str, "%Y%m%d").date()
+                # If record doesn't exist, insert it into the database
+                if not exists:
+                    session.execute('INSERT INTO weather_data (date, station_id, max_temp, min_temp, precipitation) VALUES (:date, :station_id, :max_temp, :min_temp, :precipitation)', {'date': date, 'station_id': filename.split('.')[0], 'max_temp': max_temp, 'min_temp': min_temp, 'precipitation': precipitation})
 
-            cur.execute(
-                "INSERT INTO weather_data (station_id, date, max_temp, min_temp, precipitation) VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
-                (filename[:-4], date, max_temp, min_temp, precipitation)
-            )
+end_time = datetime.datetime.now()
 
-conn.commit()
+session.commit()
+session.close()
 
-cur.close()
-conn.close()
 
-total_records = cur.rowcount
-print(f"Total records ingested: {total_records}")
+num_records = session.query(text('SELECT COUNT(*) FROM weather_data')).scalar()
+print(f'Ingestion completed. {num_records} records ingested in {end_time - start_time}.')
 

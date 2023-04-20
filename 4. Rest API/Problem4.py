@@ -8,98 +8,69 @@ Here is the high level steps involved for this
 5.Use Flask-SwaggerUI to create the Swagger documentation for the API.
 6.Write unit tests using pytest.
 
-
-from flask import Flask, request, jsonify
-from flask_restful import Api, Resource, reqparse, inputs, fields, marshal_with
+from flask import Flask, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
-from flask_cors import CORS
-from flask_swagger_ui import get_swaggerui_blueprint
+from sqlalchemy import extract, func
+from marshmallow import Schema, fields
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///weather.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['RESTFUL_API_DOC_EXPANSION'] = 'list'
-app.config['RESTFUL_MASK_SWAGGER'] = False
-app.config['RESTFUL_PAGINATION'] = True
-app.config['RESTFUL_DEFAULT_PAGE'] = 1
-app.config['RESTFUL_DEFAULT_PAGE_SIZE'] = 10
-
-api = Api(app)
+app.config['SQLALCHEMY_DATABASE_URI'] = 'some_database_uri'
 db = SQLAlchemy(app)
-CORS(app)
 
-swaggerui_blueprint = get_swaggerui_blueprint(
-    '/swagger',
-    '/static/swagger.json',
-    config={
-        'app_name': 'Weather API'
-    }
-)
-
-app.register_blueprint(swaggerui_blueprint, url_prefix='/swagger')
-
-
-class Weather(db.Model):
+class WeatherData(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    station_id = db.Column(db.String(10))
-    date = db.Column(db.Date)
+    date = db.Column(db.String(8))
+    station = db.Column(db.String(50))
     max_temp = db.Column(db.Float)
     min_temp = db.Column(db.Float)
     precipitation = db.Column(db.Float)
 
-    def __repr__(self):
-        return f'<Weather {self.id}>'
+class WeatherDataSchema(Schema):
+    id = fields.Integer()
+    date = fields.String()
+    station = fields.String()
+    max_temp = fields.Float()
+    min_temp = fields.Float()
+    precipitation = fields.Float()
 
+@app.route('/api/weather', methods=['GET'])
+def get_weather_data():
+    query = WeatherData.query
+    if 'date' in request.args:
+        query = query.filter_by(date=request.args.get('date'))
+    if 'station' in request.args:
+        query = query.filter_by(station=request.args.get('station'))
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 10, type=int)
+    data = query.paginate(page=page, per_page=per_page)
+    schema = WeatherDataSchema(many=True)
+    return jsonify(schema.dump(data.items))
 
-weather_parser = reqparse.RequestParser()
-weather_parser.add_argument('station_id', type=str)
-weather_parser.add_argument('start_date', type=inputs.date)
-weather_parser.add_argument('end_date', type=inputs.date)
-weather_parser.add_argument('page', type=int)
-weather_parser.add_argument('per_page', type=int)
-
-
-weather_fields = {
-    'id': fields.Integer,
-    'station_id': fields.String,
-    'date': fields.DateTime(dt_format='iso8601'),
-    'max_temp': fields.Float,
-    'min_temp': fields.Float,
-    'precipitation': fields.Float
-}
-
-
-class WeatherResource(Resource):
-    @marshal_with(weather_fields)
-    def get(self):
-        args = weather_parser.parse_args()
-
-        # Query filters
-        filters = []
-        if args.station_id:
-            filters.append(Weather.station_id == args.station_id)
-        if args.start_date:
-            filters.append(Weather.date >= args.start_date)
-        if args.end_date:
-            filters.append(Weather.date <= args.end_date)
-
-        # Query results
-        results = Weather.query.filter(*filters).paginate(
-            page=args.page,
-            per_page=args.per_page
-        )
-
-        return results.items
-
-
-stats_parser = reqparse.RequestParser()
-stats_parser.add_argument('start_date', type=inputs.date)
-stats_parser.add_argument('end_date', type=inputs.date)
-stats_parser.add_argument('page', type=int)
-stats_parser.add_argument('per_page', type=int)
-
-
-stats_fields = {
-    'station_id': fields.String,
-    'year': fields.Integer,
-    '
+@app.route('/api/weather/stats', methods=['GET'])
+def get_weather_stats():
+    year = request.args.get('year')
+    station = request.args.get('station')
+    if year:
+        query = db.session.query(WeatherData.station,
+                                  func.avg(WeatherData.max_temp),
+                                  func.avg(WeatherData.min_temp),
+                                  func.sum(WeatherData.precipitation)
+                                  ).filter(extract('year', WeatherData.date) == year)
+    else:
+        query = db.session.query(WeatherData.station,
+                                  func.avg(WeatherData.max_temp),
+                                  func.avg(WeatherData.min_temp),
+                                  func.sum(WeatherData.precipitation)
+                                  )
+    if station:
+        query = query.filter_by(station=station)
+    data = query.group_by(WeatherData.station).all()
+    result = []
+    for row in data:
+        result.append({
+            'station': row[0],
+            'avg_max_temp': round(row[1], 2) if row[1] else None,
+            'avg_min_temp': round(row[2], 2) if row[2] else None,
+            'total_precipitation': round(row[3]/10, 2) if row[3] else None
+        })
+    return jsonify(result)

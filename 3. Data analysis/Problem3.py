@@ -1,39 +1,28 @@
 '''
 We are using a python wrapper script to create and calculate statistics and load into weather statistics table. All the sql transformations and bundled into python code. 
 '''
-import psycopg2
+import sqlite3
 
-conn = psycopg2.connect(
-    host="some_host",
-    database="some_database",
-    user="some_username",
-    password="some_password"
-)
+conn = sqlite3.connect('weather.db')
+c = conn.cursor()
 
-cur = conn.cursor()
+query = '''
+    SELECT substr(date, 1, 4) AS year,
+           station_id,
+           avg(max_temp_c) AS avg_max_temp_c,
+           avg(min_temp_c) AS avg_min_temp_c,
+           sum(precipitation_cm) AS total_precipitation_cm
+    FROM weather
+    WHERE max_temp_c != -9999 AND min_temp_c != -9999 AND precipitation_cm != -9999
+    GROUP BY year, station_id
+'''
 
-cur.execute("SELECT DISTINCT station_id FROM weather_data")
-
-for row in cur.fetchall():
-    station_id = row[0]
-
-    cur.execute("SELECT DISTINCT EXTRACT(year FROM date) FROM weather_data WHERE station_id = %s", (station_id,))
-
-    for row in cur.fetchall():
-        year = int(row[0])
-
-        cur.execute(
-            "SELECT AVG(max_temp), AVG(min_temp), SUM(precipitation) FROM weather_data WHERE station_id = %s AND EXTRACT(year FROM date) = %s AND max_temp IS NOT NULL AND min_temp IS NOT NULL AND precipitation IS NOT NULL",
-            (station_id, year)
-        )
-        avg_max_temp, avg_min_temp, total_precipitation = cur.fetchone()
-
-        cur.execute(
-            "INSERT INTO weather_statistics (station_id, year, avg_max_temp, avg_min_temp, total_precipitation) VALUES (%s, %s, %s, %s, %s)",
-            (station_id, year, avg_max_temp, avg_min_temp, total_precipitation)
-        )
+for row in c.execute(query):
+    year, station_id, avg_max_temp_c, avg_min_temp_c, total_precipitation_cm = row
+    c.execute('''
+        INSERT INTO weather_stats (year, station_id, avg_max_temp_c, avg_min_temp_c, total_precipitation_cm)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (year, station_id, avg_max_temp_c, avg_min_temp_c, total_precipitation_cm))
 
 conn.commit()
-
-cur.close()
 conn.close()
